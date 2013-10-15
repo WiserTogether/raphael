@@ -406,6 +406,13 @@
             path: function (el) {
                 return el.attr("path");
             },
+            group: function(el) {
+                var bbox = el._getBBox();
+                return rectPath(bbox.x, bbox.y, bbox.width, bbox.height);
+            },
+            textPath: function (el) {
+                return el.path.attrs("path");
+            },
             circle: function (el) {
                 var a = el.attrs;
                 return ellipsePath(a.cx, a.cy, a.r);
@@ -2499,7 +2506,19 @@
         this.__set__ && this.__set__.push(out);
         return out;
     };
-    
+
+    paperproto.textPath = function (pathString, text) {
+        var out = R._engine.textPath(this, pathString, Str(text));
+        this.__set__ && this.__set__.push(out);
+        return out;
+    };
+
+    paperproto.group = function () {
+      var out = R._engine.group(this);
+      this.__set__ && this.__set__.push(out);
+      return out;
+    };
+
     paperproto.set = function (itemsArray) {
         !R.is(itemsArray, "array") && (itemsArray = Array.prototype.splice.call(arguments, 0, arguments.length));
         var out = new Set(itemsArray);
@@ -4698,6 +4717,49 @@ window.Raphael.svg && function (R) {
         setFillAndStroke(res, res.attrs);
         return res;
     };
+    R._engine.textPath = function (svg, pathString, text) {
+        // output
+        /*
+        <defs>
+            <path ... d="[pathString]" id="[pathId]"/>
+        </defs>
+        <text ...>
+            <textPath xlink:href="#[pathId]">[text]</textPath>
+        </svg>
+        */
+
+        var pathId = R.createUUID().toLowerCase().replace(/-/g, '_');
+
+        var path = $($("path"), {
+            d: pathString,
+            id: pathId
+        });
+
+        svg.defs.appendChild(path);
+
+        var p = new Element(path, svg);
+        p.type = "path";
+        setFillAndStroke(p, {fill: "none", stroke: "#000", path: pathString});
+        p.node.setAttribute("id", pathId);
+
+        var textPath = $('textPath');
+        textPath.appendChild(R._g.doc.createTextNode(text));
+        var t = new Element(textPath, svg);
+        t.type = "textPath";
+        textPath.setAttributeNS(svg.xlink, "xlink:href", "#" + pathId);
+
+        var el = $("text");
+        el.appendChild(textPath);
+        svg.canvas && svg.canvas.appendChild(el);
+        var res = new Element(el, svg);
+        res.attrs = {font: R._availableAttrs.font, stroke: "black", 'stroke-width': 2, fill: "#000"};
+        res.type = "textonpath";
+        res.path = p;
+        res.textPath = t;
+        setFillAndStroke(res, res.attrs);
+
+        return res;
+    };
     R._engine.setSize = function (width, height) {
         this.width = width || this.width;
         this.height = height || this.height;
@@ -5179,7 +5241,53 @@ window.Raphael.vml && function (R) {
             var brect = span.getBoundingClientRect();
             res.W = a.w = (brect.right - brect.left) / m;
             res.H = a.h = (brect.bottom - brect.top) / m;
-            // res.paper.canvas.style.display = "none";
+            res.paper.canvas.style.display = "none";
+            res.X = a.x;
+            res.Y = a.y + res.H / 2;
+
+            ("x" in params || "y" in params) && (res.path.v = R.format("m{0},{1}l{2},{1}", round(a.x * zoom), round(a.y * zoom), round(a.x * zoom) + 1));
+            var dirtyattrs = ["x", "y", "text", "font", "font-family", "font-weight", "font-style", "font-size"];
+            for (var d = 0, dd = dirtyattrs.length; d < dd; d++) if (dirtyattrs[d] in params) {
+                res._.dirty = 1;
+                break;
+            }
+
+            // text-anchor emulation
+            switch (a["text-anchor"]) {
+                case "start":
+                    res.textpath.style["v-text-align"] = "left";
+                    res.bbx = res.W / 2;
+                    break;
+                case "end":
+                    res.textpath.style["v-text-align"] = "right";
+                    res.bbx = -res.W / 2;
+                    break;
+                default:
+                    res.textpath.style["v-text-align"] = "center";
+                    res.bbx = 0;
+                    break;
+            }
+
+            res.textpath.style["v-text-kern"] = true;
+        }
+
+        if (res.type == "textPath") {
+            res.paper.canvas.style.display = E;
+            var span = res.paper.span,
+                m = 100,
+                fontSize = a.font && a.font.match(/\d+(?:\.\d*)?(?=px)/);
+            s = span.style;
+            a.font && (s.font = a.font);
+            a["font-family"] && (s.fontFamily = a["font-family"]);
+            a["font-weight"] && (s.fontWeight = a["font-weight"]);
+            a["font-style"] && (s.fontStyle = a["font-style"]);
+            fontSize = toFloat(a["font-size"] || fontSize && fontSize[0]) || 10;
+            s.fontSize = fontSize * m + "px";
+            res.textpath.string && (span.innerHTML = Str(res.textpath.string).replace(/</g, "&#60;").replace(/&/g, "&#38;").replace(/\n/g, "<br>"));
+            var brect = span.getBoundingClientRect();
+            res.W = a.w = (brect.right - brect.left) / m;
+            res.H = a.h = (brect.bottom - brect.top) / m;
+            res.paper.canvas.style.display = "none";
             res.X = a.x;
             res.Y = a.y + res.H / 2;
 
@@ -5205,9 +5313,10 @@ window.Raphael.vml && function (R) {
                     res.bbx = 0;
                 break;
             }
+
             res.textpath.style["v-text-kern"] = true;
         }
-        // res.paper.canvas.style.display = E;
+        res.paper.canvas.style.display = E;
     },
     addGradientFill = function (o, gradient, fill) {
         o.attrs = o.attrs || {};
@@ -5684,6 +5793,54 @@ window.Raphael.vml && function (R) {
         p.transform(E);
         return p;
     };
+    R._engine.textPath = function (vml, pathNode, text) {
+        var el = createNode("shape"),
+            path = createNode("path"),
+            o = createNode("textpath");
+        text = text || "";
+        path.v = path2vml(pathNode.attrs.path);
+        path.textpathok = true;
+        o.string = Str(text);
+        o.fitshape = true;
+        o.on = true;
+        o.style.cssText = "v-text-align: left;";
+        var t = pathNode.transform()[0], left = t[1], top = t[2];
+        el.style.cssText = "position:absolute;left:" + left + "px;top:" + top + "px;width:" + (vml.width * 2.2) + "px;height:" + (vml.height * 2.2) + "px;";
+        el.coordsize = vml.coordsize;
+        el.coordorigin = vml.coordorigin;
+        var p = new Element(el, vml),
+            attr = {
+                fill: "#000",
+                stroke: "none",
+                font: R._availableAttrs.font,
+                'font-size': '16px',
+                text: text
+            };
+        p.shape = el;
+        p.path = path;
+        p.textpath = o;
+        p.type = "textPath";
+        p.attrs.text = Str(text);
+        setFillAndStroke(p, attr);
+        el.appendChild(o);
+        el.appendChild(path);
+        vml.canvas.appendChild(el);
+        var skew = createNode("skew");
+        skew.on = true;
+        el.appendChild(skew);
+        p.skew = skew;
+        //p.transform(pathNode.transform());
+        return p;
+    };
+
+    R._engine.group = function (vml) {
+      var g = createNode("group");
+      var p = new Element(g, vml);
+      p.type = "group";
+      vml.canvas.appendChild(g);
+      return p;
+    };
+
     R._engine.setSize = function (width, height) {
         var cs = this.canvas.style;
         this.width = width;
@@ -5766,7 +5923,7 @@ window.Raphael.vml && function (R) {
         res.coordsize = zoom * 1e3 + S + zoom * 1e3;
         res.coordorigin = "0 0";
         res.span = R._g.doc.createElement("span");
-        res.span.style.cssText = "position:absolute;left:-9999em;top:-9999em;padding:0;margin:0;line-height:1;";
+        res.span.style.cssText = "position:absolute;left:-9999em;top:-9999em;padding:0;margin:0;line-height:1;white-space:nowrap;";
         c.appendChild(res.span);
         cs.cssText = R.format("top:0;left:0;width:{0};height:{1};display:inline-block;position:relative;clip:rect(0 {0} {1} 0);overflow:hidden", width, height);
         if (container == 1) {
